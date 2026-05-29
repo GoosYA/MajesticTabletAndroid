@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from kivy.app import App
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
@@ -6,23 +8,45 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
-from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 
 Window.clearcolor = (0.04, 0.06, 0.12, 1)
 
 SCORES_PM = {
+    "-- ПМП --": "header",
     "ПМП (город | День)": 3,
     "ПМП (город | Ночь)": 5,
     "ПМП (пригород | День)": 4,
     "ПМП (пригород | Ночь)": 6,
+    "-- ТАБЛЕТКИ --": "header",
     "Таблетка (город)": 1,
     "Таблетка (пригород)": 2,
+    "-- ВАКЦИНЫ --": "header",
     "Вакцина (город)": 3,
     "Вакцина (пригород)": 5,
+    "-- ДЕЖУРСТВА --": "header",
+    "Дневное дежурство ELSH": 10,
+    "Ночное дежурство ELSH": 25,
+    "-- СПРАВКИ --": "header",
+    "Справка: Днём в ELSH": 3,
+    "Справка: Ночью в ELSH": 6,
+    "Справка: Днём в Sandy / Paleto": 5,
+    "Справка: Ночью в Sandy / Paleto": 9,
+    "-- ПРОЧЕЕ --": "header",
     "Благодарность": 1,
 }
+
+
+class SectionLabel(Label):
+    def __init__(self, title, **kwargs):
+        super().__init__(**kwargs)
+        self.text = title.replace("-", "").strip().upper()
+        self.font_size = "18sp"
+        self.bold = True
+        self.color = (0.23, 0.51, 0.96, 1)
+        self.size_hint_y = None
+        self.height = dp(42)
 
 
 class ActionCard(BoxLayout):
@@ -39,13 +63,14 @@ class ActionCard(BoxLayout):
 
         title = Label(
             text=action_name,
-            font_size="18sp",
+            font_size="17sp",
             bold=True,
             size_hint_y=None,
             height=dp(35),
         )
 
         self.count_input = TextInput(
+            text="0",
             hint_text="Количество",
             input_filter="int",
             multiline=False,
@@ -69,6 +94,8 @@ class MainScreen(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+        self.last_report = ""
+        self.entries = {}
         self.orientation = "vertical"
         self.padding = dp(15)
         self.spacing = dp(10)
@@ -80,24 +107,23 @@ class MainScreen(BoxLayout):
             size_hint_y=None,
             height=dp(50),
         )
-
         self.add_widget(header)
 
         scroll = ScrollView()
-
         self.grid = GridLayout(
             cols=1,
             spacing=dp(12),
             size_hint_y=None,
         )
-
         self.grid.bind(minimum_height=self.grid.setter("height"))
 
-        self.cards = []
+        for action, value in SCORES_PM.items():
+            if value == "header":
+                self.grid.add_widget(SectionLabel(action))
+                continue
 
-        for action, score in SCORES_PM.items():
-            card = ActionCard(action, score)
-            self.cards.append(card)
+            card = ActionCard(action, value)
+            self.entries[action] = card
             self.grid.add_widget(card)
 
         scroll.add_widget(self.grid)
@@ -106,84 +132,115 @@ class MainScreen(BoxLayout):
         button_layout = BoxLayout(
             size_hint_y=None,
             height=dp(60),
-            spacing=dp(10),
+            spacing=dp(8),
         )
 
         generate_btn = Button(text="СГЕНЕРИРОВАТЬ")
-        generate_btn.bind(on_release=self.generate_report)
+        generate_btn.bind(on_press=self.generate_report)
+
+        copy_btn = Button(text="КОПИРОВАТЬ")
+        copy_btn.bind(on_press=self.copy_report)
 
         clear_btn = Button(text="ОЧИСТИТЬ")
-        clear_btn.bind(on_release=self.clear_fields)
+        clear_btn.bind(on_press=self.clear_fields)
 
         button_layout.add_widget(generate_btn)
+        button_layout.add_widget(copy_btn)
         button_layout.add_widget(clear_btn)
-
         self.add_widget(button_layout)
 
-    def generate_report(self, *_args):
-        lines = []
-        total_score = 0
-
-        for card in self.cards:
-            count_text = card.count_input.text.strip()
-            link = card.link_input.text.strip()
-
-            if not count_text:
-                continue
-
-            count = int(count_text)
-            if count <= 0:
-                continue
-
-            score = count * card.score
-            total_score += score
-
-            line = f"{card.action_name}: {count} x {card.score} = {score} балл."
-            if link:
-                line += f" Ссылка: {link}"
-            lines.append(line)
-
-        if not lines:
-            self.show_message("Отчет", "Введите количество хотя бы в одном пункте.")
-            return
-
-        report = "\n".join(lines)
-        report += f"\n\nИтого: {total_score} балл."
-        Clipboard.copy(report)
-        self.show_message("Отчет скопирован", report)
-
-    def clear_fields(self, *_args):
-        for card in self.cards:
-            card.count_input.text = ""
-            card.link_input.text = ""
-
-    def show_message(self, title, message):
-        content = BoxLayout(
-            orientation="vertical",
-            spacing=dp(10),
-            padding=dp(10),
+        self.status_label = Label(
+            text="Заполните данные и нажмите СГЕНЕРИРОВАТЬ.",
+            size_hint_y=None,
+            height=dp(32),
         )
-        text = TextInput(
-            text=message,
+        self.add_widget(self.status_label)
+
+        self.result_output = TextInput(
+            text="",
+            hint_text="Здесь появится готовый отчет",
             readonly=True,
             multiline=True,
-            size_hint_y=True,
-        )
-        close_btn = Button(
-            text="ЗАКРЫТЬ",
             size_hint_y=None,
-            height=dp(48),
+            height=dp(190),
         )
-        content.add_widget(text)
-        content.add_widget(close_btn)
+        self.add_widget(self.result_output)
 
-        popup = Popup(
-            title=title,
-            content=content,
-            size_hint=(0.9, 0.75),
-        )
-        close_btn.bind(on_release=popup.dismiss)
-        popup.open()
+    def generate_report(self, *_args):
+        try:
+            report = self.build_report()
+        except Exception as exc:
+            self.last_report = ""
+            self.result_output.text = ""
+            self.status_label.text = f"Ошибка генерации: {exc}"
+            return
+
+        self.last_report = report
+        self.result_output.text = report
+        self.status_label.text = "Отчет сгенерирован. Нажмите КОПИРОВАТЬ."
+
+    def build_report(self):
+        report = "ВАШ ОТЧЕТ\n"
+        total = 0
+        total_pm = 0
+
+        items = list(SCORES_PM.items())
+        for index, (action, value) in enumerate(items):
+            if value != "header":
+                continue
+
+            section_lines = []
+            section_title = action.replace("-", "").strip()
+
+            for sub_action, sub_value in items[index + 1:]:
+                if sub_value == "header":
+                    break
+
+                card = self.entries[sub_action]
+                count_text = card.count_input.text.strip()
+                count = int(count_text) if count_text.isdigit() else 0
+                if count <= 0:
+                    continue
+
+                link = card.link_input.text.strip() or "нет ссылки"
+                score = count * sub_value
+                total += score
+
+                if "ПМП" in section_title.upper():
+                    total_pm += score
+
+                section_lines.append(f"• {sub_action}:\n   {count} | {link} | {score}")
+
+            if section_lines:
+                report += f"\n[{section_title}]\n" + "\n".join(section_lines) + "\n"
+
+        report += f"\n------------------\nИТОГО: {total}"
+        if total > 0:
+            report += f"\nПМП составляет: {(total_pm / total * 100):.1f}% от общих баллов"
+
+        return report
+
+    def copy_report(self, *_args):
+        if not self.last_report:
+            self.status_label.text = "Сначала нажмите СГЕНЕРИРОВАТЬ."
+            return
+
+        try:
+            Clipboard.copy(self.last_report)
+        except Exception as exc:
+            self.status_label.text = f"Не удалось скопировать: {exc}"
+            return
+
+        self.status_label.text = "Отчет скопирован в буфер обмена."
+
+    def clear_fields(self, *_args):
+        for card in self.entries.values():
+            card.count_input.text = "0"
+            card.link_input.text = ""
+
+        self.last_report = ""
+        self.result_output.text = ""
+        self.status_label.text = "Поля очищены."
 
 
 class EMSApp(App):
